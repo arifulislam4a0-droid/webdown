@@ -3,87 +3,89 @@ const cluster = require('cluster');
 const numCPUs = require('os').cpus().length;
 
 const targetUrl = 'https://asopori.com/';
-const PRINT_INTERVAL = 10000;
-
-// রেন্ডম আইপি জেনারেট করার ফাংশন
-const getRandomIP = () => {
-    return `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
-};
-
-// রেন্ডম ইউজার এজেন্ট (বিভিন্ন ডিভাইস সিমুলেট করতে)
-const getRandomUserAgent = () => {
-    const agents = [
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (iPhone; CPU iPhone OS 17_3 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.2 Mobile/15E148 Safari/604.1",
-        "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.64 Mobile Safari/537.36",
-        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36",
-        "Mozilla/5.0 (Linux; Android 10; SM-G960F) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.6261.64 Mobile Safari/537.36"
-    ];
-    return agents[Math.floor(Math.random() * agents.length)];
-};
+const PRINT_INTERVAL = 5000; // ৫ সেকেন্ড পর পর আপডেট দেখাবে
 
 if (cluster.isMaster) {
-    let totalRequests = 0;
-    console.log(`🔥 Stress Test Started on: ${targetUrl}`);
-    console.log(`🧵 Cores Utilization: ${numCPUs}`);
+    let totalSuccess = 0;
+    let totalErrors = 0;
+    console.log(`🚀 Smart Load Balancer Started...`);
+    console.log(`💻 Server Specs: 0.1 CPU | 512MB RAM`);
 
     for (let i = 0; i < numCPUs; i++) {
         const worker = cluster.fork();
-        worker.on('message', (msg) => { totalRequests += msg.data; });
+        worker.on('message', (msg) => {
+            if (msg.type === 'success') totalSuccess++;
+            if (msg.type === 'error') totalErrors++;
+        });
     }
 
     setInterval(() => {
-        console.log(`📊 Total (10s): ${totalRequests.toLocaleString()} | Avg: ${(totalRequests / 10).toLocaleString()} req/sec`);
-        totalRequests = 0;
+        const rps = (totalSuccess / 5).toFixed(2);
+        console.log(`[${new Date().toLocaleTimeString()}] 📊 Stats:`);
+        console.log(`   ✅ Success: ${totalSuccess} | ❌ Failed: ${totalErrors} | ⚡ Avg: ${rps} req/sec`);
+
+        if (totalErrors > totalSuccess) {
+            console.log(`   ⚠️  Warning: Server is struggling! Throttling auto-detected.`);
+        }
+        totalSuccess = 0;
+        totalErrors = 0;
     }, PRINT_INTERVAL);
 
 } else {
     const agent = new https.Agent({
         keepAlive: true,
-        keepAliveMsecs: 60000,
-        maxSockets: Infinity,
-        maxFreeSockets: 2048,
-        rejectUnauthorized: false
+        maxSockets: 100, // ৫১২ এমবি র‍্যামের জন্য এটি লিমিটেড রাখা ভালো
     });
 
-    let batchCount = 0;
-    setInterval(() => {
-        if (batchCount > 0) {
-            process.send({ type: 'count', data: batchCount });
-            batchCount = 0;
-        }
-    }, 1000);
+    let currentConcurrency = 10; // শুরু হবে ১০টি রিকোয়েস্ট দিয়ে
+    const maxConcurrency = 200;  // আপনার সার্ভারের জন্য এর বেশি যাওয়া ঝুঁকিপূর্ণ
 
-    function startLoad() {
+    function getRandomIP() {
+        return `${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}.${Math.floor(Math.random() * 255)}`;
+    }
+
+    function sendRequest() {
+        const start = Date.now();
         const options = {
             method: 'GET',
             agent: agent,
             headers: {
-                'X-Forwarded-For': getRandomIP(), // সার্ভারকে রেন্ডম আইপি দেখাবে
-                'Client-IP': getRandomIP(),
-                'User-Agent': getRandomUserAgent(), // রেন্ডম ডিভাইস দেখাবে
-                'Connection': 'keep-alive'
+                'X-Forwarded-For': getRandomIP(),
+                'User-Agent': 'Adaptive-Tester/1.0',
             }
         };
 
         const req = https.get(targetUrl, options, (res) => {
-            res.on('data', () => { });
+            const duration = Date.now() - start;
+            res.resume(); // Memory free করার জন্য
+
             res.on('end', () => {
-                batchCount++;
-                setImmediate(startLoad); // রিকার্সন স্ট্যাক ঠিক রাখতে setImmediate ব্যবহার করা ভালো
+                process.send({ type: 'success' });
+
+                // --- AUTO DETECT LOGIC ---
+                // যদি সার্ভার ২০০ মিলিসেকেন্ডের চেয়ে দ্রুত রেসপন্স দেয়, লোড বাড়াও
+                if (duration < 200 && currentConcurrency < maxConcurrency) {
+                    currentConcurrency++;
+                    setImmediate(sendRequest);
+                    setImmediate(sendRequest); // ডাবল রিকোয়েস্ট পাঠিয়ে লোড বাড়ানো
+                } else {
+                    // সার্ভার স্লো হলে রিকোয়েস্ট রেট কমাও
+                    setTimeout(sendRequest, 50);
+                }
             });
         });
 
         req.on('error', () => {
-            batchCount++;
-            setTimeout(startLoad, 5); // এরর হলে সামান্য গ্যাপ দিয়ে আবার শুরু
+            process.send({ type: 'error' });
+            // এরর খেলে ৫১২ এমবি র‍্যামে প্রেসার না দিয়ে একটু বিরতি দাও
+            setTimeout(sendRequest, 500);
         });
 
         req.end();
     }
 
-    const initialConcurrency = 400;
-    for (let i = 0; i < initialConcurrency; i++) {
-        startLoad();
+    // শুরুতে ছোট আকারে শুরু করা
+    for (let i = 0; i < currentConcurrency; i++) {
+        sendRequest();
     }
 }
